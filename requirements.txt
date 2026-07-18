@@ -59,3 +59,5 @@ uvicorn==0.51.0
 watchfiles==1.2.0
 websockets==16.1
 sqlalchemy==2.0.51
+piper-tts==1.5.0
+pathvalidate==3.3.1

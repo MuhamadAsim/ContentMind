@@ -53,11 +53,11 @@ async def lifespan(app: FastAPI):
         response = httpx.get(f"{settings.EMBEDDING_SERVICE_URL}/health", timeout=5.0)
         response.raise_for_status()
         data = response.json()
-        print(f"✓ Embedding service connected: {data['model']} ({data['dimensions']}-dim)")
+        print(f"[OK] Embedding service connected: {data['model']} ({data['dimensions']}-dim)")
 
         if data["dimensions"] != settings.PINECONE_DIMENSION:
             print(
-                f"✗ FATAL: Embedding service outputs {data['dimensions']}-dim vectors, "
+                f"[FATAL] Embedding service outputs {data['dimensions']}-dim vectors, "
                 f"but PINECONE_DIMENSION is set to {settings.PINECONE_DIMENSION}. "
                 f"Fix your .env or Pinecone index config."
             )
@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
 
     except httpx.ConnectError:
         print(
-            f"✗ FATAL: Cannot reach embedding service at {settings.EMBEDDING_SERVICE_URL}. "
+            f"[FATAL] Cannot reach embedding service at {settings.EMBEDDING_SERVICE_URL}. "
             f"Start it first: uvicorn server:app --host 127.0.0.1 --port <port>"
         )
         sys.exit(1)

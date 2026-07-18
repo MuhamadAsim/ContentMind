@@ -38,6 +38,7 @@ Phase 1 of a two-phase project:
 | Embeddings | **External DevMind Embedding Service** — HTTP client only, called via `services/embedder.py`. Do NOT load `sentence-transformers` in this repo's process. | Model: `BAAI/bge-small-en-v1.5`, 384 dimensions, started manually by the dev on a variable port |
 | Vector DB | Pinecone (cloud, serverless). Package is `pinecone` (NOT `pinecone-client`). | Index: `video-qa`, dimension=384, metric=cosine |
 | Q&A LLM | OpenRouter API (OpenAI-compatible SDK, different `base_url`) | Default model: `openai/gpt-4o-mini`, configurable via `DEFAULT_AI_MODEL` env var |
+| Text-to-Speech (TTS) | Piper TTS (via `piper-tts` package) | Uses local ONNX model `en_US-lessac-medium` stored at `app/resources/voices/` |
 | Frontend | React (Vite), plain CSS, no state library | Upload box accepts video, audio, PDF |
 
 ## Supported file types
@@ -214,7 +215,7 @@ npm run dev
 | GET | `/api/files` | List all knowledge files (all types) |
 | GET | `/api/files/{id}` | Get detail for any knowledge file |
 | DELETE | `/api/files/{id}` | Delete file, Pinecone vectors, and DB record |
-| POST | `/api/ask` | Ask a question against any `ready` file |
+| POST | `/api/ask` | Ask a question against any `ready` file (accepts text or voice recording via multipart form) |
 
 ## Known constraints — don't "fix" these, they're intentional
 

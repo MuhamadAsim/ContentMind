@@ -26,6 +26,7 @@ class SourceReference(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     sources: list[SourceReference]
+    audio_base64: str | None = None
 
 
 class ErrorResponse(BaseModel):
