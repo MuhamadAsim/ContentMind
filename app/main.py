@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect, text
 
 from app.config import settings
 from app.database import engine, Base
@@ -16,10 +17,34 @@ from app.routers import upload, query
 from pathlib import Path
 
 
+def _run_migrations() -> None:
+    """
+    Apply schema migrations that create_all() cannot handle.
+
+    create_all() only creates missing *tables* — it does NOT add new
+    columns to existing tables. New columns must be added with explicit
+    ALTER TABLE statements.
+    """
+    inspector = inspect(engine)
+    # Guard: table may not exist yet on a fresh install (create_all handles that)
+    if "knowledge_files" not in inspector.get_table_names():
+        return
+
+    existing_columns = {col["name"] for col in inspector.get_columns("knowledge_files")}
+
+    with engine.begin() as conn:
+        if "page_count" not in existing_columns:
+            print("Migration: adding 'page_count' column to knowledge_files...")
+            conn.execute(text("ALTER TABLE knowledge_files ADD COLUMN page_count INTEGER"))
+            print("Migration: 'page_count' column added.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite database and ensure upload directories exist
+    # 1. Create any missing tables (fresh install path)
     Base.metadata.create_all(bind=engine)
+    # 2. Apply column-level migrations for existing databases
+    _run_migrations()
     Path(settings.UPLOAD_STORAGE_DIR).mkdir(parents=True, exist_ok=True)
 
     # Startup check — fail fast with a clear message instead of a

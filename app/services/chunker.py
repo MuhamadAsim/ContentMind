@@ -91,6 +91,67 @@ class Chunker:
             end_time=segments[-1].end,
         )
 
+    def chunk_text(self, text: str) -> list[Chunk]:
+        """
+        Split a plain-text string (e.g. from a PDF) into overlapping,
+        token-limited chunks. Because there are no Whisper segment
+        boundaries to guide splitting, we use ". " as a soft sentence
+        delimiter — chunks will not be cut mid-sentence where possible.
+
+        Returned Chunks have start_time=0.0 / end_time=0.0 (no timestamps).
+
+        Args:
+            text: The full extracted text of the document.
+
+        Returns:
+            List of Chunk objects ready for embedding.
+        """
+        if not text.strip():
+            return []
+
+        # Split into pseudo-sentences on ". " to avoid mid-sentence cuts.
+        # Re-attach the period so context isn't lost.
+        raw_sentences = [s + "." for s in text.split(". ") if s.strip()]
+
+        chunks: list[Chunk] = []
+        current_parts: list[str] = []
+        current_tokens = 0
+
+        for sentence in raw_sentences:
+            sentence_tokens = self._token_count(sentence)
+
+            if current_tokens + sentence_tokens > self.max_tokens and current_parts:
+                chunks.append(Chunk(
+                    text=" ".join(current_parts),
+                    start_time=0.0,
+                    end_time=0.0,
+                ))
+
+                # Carry forward overlap: retain trailing sentences whose
+                # combined token count fits within overlap_tokens.
+                overlap_parts: list[str] = []
+                overlap_sum = 0
+                for part in reversed(current_parts):
+                    t = self._token_count(part)
+                    if overlap_sum + t > self.overlap_tokens:
+                        break
+                    overlap_parts.insert(0, part)
+                    overlap_sum += t
+
+                current_parts = overlap_parts
+                current_tokens = overlap_sum
+
+            current_parts.append(sentence)
+            current_tokens += sentence_tokens
+
+        if current_parts:
+            chunks.append(Chunk(
+                text=" ".join(current_parts),
+                start_time=0.0,
+                end_time=0.0,
+            ))
+
+        return chunks
 
 if __name__ == "__main__":
     # Standalone test — chains audio_extractor -> transcription -> chunker

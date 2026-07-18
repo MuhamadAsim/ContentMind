@@ -1,4 +1,4 @@
-# AGENTS.md — Video Q&A Backend
+# AGENTS.md — Knowledge Library Backend
 
 Context file for AI coding agents (Claude Code, Cursor, etc.) working on this repo.
 Read this before making changes — it encodes decisions already made and why,
@@ -7,9 +7,9 @@ so don't re-litigate them without asking.
 ## What this is
 
 Phase 1 of a two-phase project:
-- **Phase 1 (this repo, in progress):** User uploads a short video (~5 min),
-  asks questions about its content. Persistent library storage, no auth,
-  no conversation chat history, no saved queries.
+- **Phase 1 (this repo, in progress):** User uploads a supported file (video,
+  audio, or PDF), asks questions about its content. Persistent library storage,
+  no auth, no conversation chat history, no saved queries.
 - **Phase 2 (future, not built yet):** Same backend evolves into a live
   meeting assistant — real-time audio in, streaming transcription, continuous
   Q&A during a live call. Phase 1 is deliberately architected so Phase 2 is
@@ -30,38 +30,91 @@ Phase 1 of a two-phase project:
 | Layer | Choice | Notes |
 |---|---|---|
 | Backend framework | FastAPI | async, single service |
-| Audio extraction | ffmpeg (via subprocess, not python bindings doing the actual decode) | 16kHz mono WAV output |
-| Transcription | `faster-whisper`, model size `small`, device `cpu`, compute_type `int8` | NOT the original `openai-whisper` package — faster-whisper is required for CPU performance |
-| Persistence / Library | SQLite + SQLAlchemy | Database is `knowledge.db`. Stores metadata of processed files. Video files are stored permanently under `storage/uploads/video/` |
-| Chunking | `tiktoken` (cl100k_base) + sentence/segment-aware splitter | token-based, not char-based |
+| Audio extraction | ffmpeg (via subprocess) | 16kHz mono WAV output; used only for video→audio step |
+| Transcription | `faster-whisper`, model size `small`, device `cpu`, compute_type `int8` | NOT the original `openai-whisper` package |
+| Persistence / Library | SQLite + SQLAlchemy | Database is `knowledge.db`. Stores metadata of all file types. Files stored under `storage/uploads/{type}/` |
+| PDF extraction | `pymupdf` (`import fitz`) | Pure CPU, no dependencies; extensible to other doc types via `DocumentProcessor._EXTENSION_HANDLERS` |
+| Chunking | `tiktoken` (cl100k_base) + segment-aware or sentence-split | `chunk_transcript()` for audio/video (timestamps preserved); `chunk_text()` for documents |
 | Embeddings | **External DevMind Embedding Service** — HTTP client only, called via `services/embedder.py`. Do NOT load `sentence-transformers` in this repo's process. | Model: `BAAI/bge-small-en-v1.5`, 384 dimensions, started manually by the dev on a variable port |
-| Vector DB | Pinecone (cloud, serverless). Package is `pinecone` (NOT `pinecone-client` — that's the deprecated name). | Index: `video-qa`, dimension=384, metric=cosine — must match embedding model exactly |
+| Vector DB | Pinecone (cloud, serverless). Package is `pinecone` (NOT `pinecone-client`). | Index: `video-qa`, dimension=384, metric=cosine |
 | Q&A LLM | OpenRouter API (OpenAI-compatible SDK, different `base_url`) | Default model: `openai/gpt-4o-mini`, configurable via `DEFAULT_AI_MODEL` env var |
-| Session state | Replaced by SQLite persistent metadata | No conversation history is stored; only files are persisted |
-| Frontend | React (Vite), plain CSS, no state library | Two screens only: upload, chat. No routing library needed at this scope |
+| Frontend | React (Vite), plain CSS, no state library | Upload box accepts video, audio, PDF |
+
+## Supported file types
+
+| Category | Formats | Processor | DB `type` |
+|---|---|---|---|
+| Video | MP4, MOV, AVI, MKV, WebM, FLV, WMV, 3GP, OGV | `VideoProcessor` | `"video"` |
+| Audio | MP3, WAV, M4A, FLAC, OGG, AAC, WMA, Opus | `AudioProcessor` | `"audio"` |
+| Document | PDF | `DocumentProcessor` | `"document"` |
+
+To add a new format, register it in `processor_factory.py` (for a new processor class)
+or add an entry to `DocumentProcessor._EXTENSION_HANDLERS` (for new document types
+handled by the same extraction pattern).
+
+## Upload pipeline
+
+```
+POST /api/upload
+      │
+      ▼
+ProcessorFactory.get_file_type_label(mime, filename)   ← fails fast with 400 if unsupported
+      │
+      ▼
+Save file to storage/uploads/{type}/{uuid}_{filename}
+Create DB record (status="processing")
+      │
+      ▼
+ProcessorFactory.get_processor(mime, filename, transcriber)
+      │
+      ▼
+processor.process(file_path)  →  ProcessorResult(text, duration, page_count, metadata)
+      │
+      ├── metadata["segments"] present?
+      │       YES → chunker.chunk_transcript(segments)   # audio/video: timestamps preserved
+      │       NO  → chunker.chunk_text(text)             # documents: start/end = 0.0
+      │
+      ▼
+embedding_service.embed(chunk_texts)
+      │
+      ▼
+vector_store.upsert_chunks(namespace=kb_{uuid}, ...)
+      │
+      ▼
+Update DB record (status="ready", duration/page_count set)
+```
+
+On any failure: DB → `"failed"`, Pinecone vectors cleaned up, file preserved on disk.
 
 ## Project structure
 
 ```
 backend/
 ├── app/
-│   ├── main.py                 # FastAPI entrypoint, startup DB schema check
+│   ├── main.py                 # FastAPI entrypoint; startup DB schema check + migration
 │   ├── config.py               # pydantic-settings, reads .env — single source of config
 │   ├── database.py             # SQLite connection engine & get_db session dependency
 │   ├── models/
-│   │   ├── knowledge.py        # SQLAlchemy model (KnowledgeFile)
+│   │   ├── knowledge.py        # SQLAlchemy model (KnowledgeFile) — includes page_count
 │   │   └── schemas.py          # Pydantic request/response models
 │   ├── services/
-│   │   ├── audio_extractor.py  # ffmpeg wrapper
+│   │   ├── audio_extractor.py  # ffmpeg wrapper (video→WAV only)
 │   │   ├── transcription.py    # faster-whisper wrapper (Transcriber class)
-│   │   ├── chunker.py          # token-based chunking (Chunker class)
+│   │   ├── chunker.py          # token-based chunking; chunk_transcript() + chunk_text()
 │   │   ├── embedder.py         # HTTP client to DevMind embedding service
 │   │   ├── vector_store.py     # Pinecone wrapper (VectorStore class)
 │   │   ├── qa_engine.py        # retrieval + OpenRouter LLM call (QAEngine class)
-│   │   └── knowledge_manager.py # database CRUD operations for KnowledgeFile
+│   │   ├── knowledge_manager.py # database CRUD operations for KnowledgeFile
+│   │   └── processors/
+│   │       ├── __init__.py
+│   │       ├── base_processor.py      # ProcessorResult dataclass + BaseProcessor ABC
+│   │       ├── video_processor.py     # audio extract → transcribe → ProcessorResult
+│   │       ├── audio_processor.py     # direct transcribe → ProcessorResult
+│   │       ├── document_processor.py  # PDF text extraction → ProcessorResult (extensible)
+│   │       └── processor_factory.py   # registry-based MIME/extension dispatch
 │   └── routers/
-│       ├── upload.py           # POST /api/upload, GET /api/videos, DELETE /api/videos/{id}
-│       └── query.py            # POST /api/ask
+│       ├── upload.py           # POST /api/upload, GET /api/files, DELETE /api/files/{id}
+│       └── query.py            # POST /api/ask (works for all file types)
 ├── requirements.txt
 └── .env
 ```
@@ -70,37 +123,46 @@ backend/
 
 1. **Services are classes with dependency injection, not free functions
    calling globals.** `QAEngine`, `VectorStore`, `EmbeddingService`,
-   `Transcriber`, `Chunker` all take their dependencies via constructor args.
-   This is deliberate — it's what lets Phase 2 swap implementations without
-   touching callers. Preserve this pattern for any new service.
+   `Transcriber`, `Chunker`, all processors — take their dependencies via
+   constructor args. Preserve this pattern for any new service.
 
 2. **Expensive objects (Whisper model, embedding client, Pinecone client)
    are instantiated ONCE at module load in `routers/upload.py`, never
    per-request.** Never re-instantiate `Transcriber()` inside a route handler.
+   The `Transcriber` singleton is shared between `VideoProcessor` and
+   `AudioProcessor` via the factory.
 
 3. **Every service file has a `if __name__ == "__main__":` standalone test
-   block.** When adding a new service, add one too — this project is built
-   and verified bottom-up (test each piece standalone before wiring into
-   the API), not top-down. Run standalone tests with
-   `python -m app.services.<name>` (module syntax, not direct file path —
-   internal imports depend on it).
+   block.** Run with `python -m app.services.<name>` (module syntax, not
+   direct file path — internal imports depend on it). Processor standalone
+   tests: `python -m app.services.processors.<name>`.
 
-4. **Library persistence, by design.** Uploaded files are copied permanently to
-   `storage/uploads/<type>/` (e.g. `storage/uploads/video/`), and their metadata is stored in SQLite. Temp video/audio files during processing are deleted in a `finally` block after each upload. Do not cache or persist conversations or Q&A history.
+4. **Library persistence, by design.** Uploaded files are copied permanently
+   to `storage/uploads/<type>/`. Temp audio files (WAV extracted from video)
+   are cleaned up by the `VideoProcessor.process()` method. Do not cache or
+   persist conversations or Q&A history.
 
 5. **Config always goes through `app/config.py` (`settings` object).**
    Never read `os.environ` directly elsewhere in the app.
 
-6. **Pinecone namespace = kb_<uuid>.** Every upsert/query/delete must be
+6. **Pinecone namespace = `kb_<uuid>`.** Every upsert/query/delete must be
    scoped to a unique namespace per file. Never query or write across the
-   whole index without a namespace — that would leak one file's chunks into another's
-   answers.
+   whole index without a namespace.
 
-7. **Fail fast, don't fail silently.** The app has a startup check in
-   `main.py` that verifies the embedding service is reachable and its
-   dimension matches `PINECONE_DIMENSION` before accepting requests. Keep
-   this pattern for any new external dependency — clear error at startup,
-   not a cryptic failure mid-request.
+7. **Fail fast, don't fail silently.** Startup check in `main.py` verifies
+   the embedding service is reachable and dimension-compatible. Keep this
+   pattern for any new external dependency.
+
+8. **Schema migrations are explicit, not implicit.** `Base.metadata.create_all()`
+   only creates missing tables — it does NOT add columns to existing tables.
+   New columns must be added via `ALTER TABLE` in `_run_migrations()` in
+   `main.py`. Never assume `create_all()` performs schema migration.
+
+9. **Processor registration is centralized in `processor_factory.py`.**
+   Adding a new file type means: create a `BaseProcessor` subclass, then
+   call `ProcessorFactory.register(mime_types=[...], extensions=[...], ...)`.
+   Detection order: MIME exact match → MIME prefix (e.g. `video/*`) →
+   file extension fallback. Do not scatter file-type detection elsewhere.
 
 ## Environment variables (`.env`)
 
@@ -123,9 +185,8 @@ DEFAULT_AI_MODEL=openai/gpt-4o-mini
 ```
 
 `EMBEDDING_SERVICE_URL`'s port is **not fixed** — the developer starts the
-DevMind embedding service manually (`uvicorn server:app --host 127.0.0.1
---port <port>`) and picks the port each time. Never hardcode a port number
-in code; always read it from `.env`.
+DevMind embedding service manually and picks the port each time. Never
+hardcode a port number in code; always read it from `.env`.
 
 ## Running the project (development)
 
@@ -145,27 +206,30 @@ cd frontend
 npm run dev
 ```
 
+## API routes
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/api/upload` | Upload any supported file; returns `KnowledgeDetailResponse` |
+| GET | `/api/files` | List all knowledge files (all types) |
+| GET | `/api/files/{id}` | Get detail for any knowledge file |
+| DELETE | `/api/files/{id}` | Delete file, Pinecone vectors, and DB record |
+| POST | `/api/ask` | Ask a question against any `ready` file |
+
 ## Known constraints — don't "fix" these, they're intentional
 
-- **CPU-only Whisper is slow.** Acceptable at ~5 min videos (a few minutes
-  of processing). Don't suggest GPU acceleration. If videos grow much
-  longer, the fix is async/background processing with polling — not a
-  faster model or GPU, unless the user explicitly changes the hardware
-  constraint.
-- **Synchronous `/api/upload`.** No background job queue, no polling
-  endpoint. This is a deliberate YAGNI choice for Phase 1's ~5 min video
-  scope. Don't add Celery/RQ/background tasks unless asked.
+- **CPU-only Whisper is slow.** Acceptable at ~5 min videos/audio. Don't
+  suggest GPU acceleration. For longer content, the fix is async background
+  processing with polling — not a faster model or GPU.
+- **Synchronous `/api/upload`.** No background job queue. Deliberate YAGNI
+  choice for Phase 1's short-content scope. Don't add Celery/RQ unless asked.
 - **No auth, no rate limiting, no multi-user isolation beyond file_id.**
-  This is a local single-user tool, not a deployed multi-tenant service.
+  Local single-user tool, not a multi-tenant service.
 
 ## Phase 2 (future) — what NOT to break
 
-When Phase 2 (live meeting assistant) work begins, these pieces are
-expected to be **replaced or extended**, not the ones below them:
-
 **Will change:**
-- `transcription.py` → gets a streaming counterpart (e.g. Deepgram/
-  AssemblyAI client, or `faster-whisper` on a rolling buffer)
+- `transcription.py` → gets a streaming counterpart
 - `routers/upload.py` → REST upload gets a WebSocket sibling for live audio
 - Chunking/embedding becomes incremental instead of one-shot batch
 
@@ -173,9 +237,9 @@ expected to be **replaced or extended**, not the ones below them:
 - `qa_engine.py` — retrieval + answer generation logic
 - `vector_store.py` — Pinecone wrapper
 - `embedder.py` — HTTP client to the embedding service
+- All processors in `services/processors/` — they are Phase 1 only
 - Prompt construction in `qa_engine.py`
 
-If a Phase 2 change requires modifying any of the "must not change" files,
-stop and flag it — that means the Phase 1 interface boundary was drawn in
-the wrong place and needs a conscious redesign discussion, not a quiet
-workaround.
+If a Phase 2 change requires modifying any "must not change" files, stop and
+flag it — that means the Phase 1 interface boundary was drawn in the wrong
+place and needs a conscious redesign discussion.

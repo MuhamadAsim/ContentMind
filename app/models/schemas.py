@@ -17,6 +17,8 @@ class AskRequest(BaseModel):
 
 
 class SourceReference(BaseModel):
+    # start_time / end_time are set for audio/video chunks;
+    # they will be 0.0 / 0.0 for document chunks (no timestamps).
     start_time: float
     end_time: float
 
@@ -33,6 +35,7 @@ class ErrorResponse(BaseModel):
 class KnowledgeListItem(BaseModel):
     id: str
     title: str
+    type: str
     status: str
     created_at: datetime
 
@@ -49,10 +52,11 @@ class KnowledgeDetailResponse(BaseModel):
     file_size: int
     mime_type: str
     duration: float | None = None
+    page_count: int | None = None
     status: str
     pinecone_namespace: str
     created_at: datetime
     updated_at: datetime
     processed_at: datetime | None = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)

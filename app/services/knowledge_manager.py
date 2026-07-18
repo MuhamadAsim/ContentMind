@@ -49,6 +49,7 @@ class KnowledgeManager:
         file_id: str,
         status: str,
         duration: float = None,
+        page_count: int = None,
         processed_at: datetime = None,
     ) -> KnowledgeFile | None:
         """Update the processing status of a knowledge file record."""
@@ -57,6 +58,8 @@ class KnowledgeManager:
             knowledge_file.status = status
             if duration is not None:
                 knowledge_file.duration = duration
+            if page_count is not None:
+                knowledge_file.page_count = page_count
             if processed_at is not None:
                 knowledge_file.processed_at = processed_at
             self.db.commit()
