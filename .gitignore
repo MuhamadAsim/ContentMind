@@ -130,3 +130,8 @@ desktop.ini
 # ==========================================================
 *.aac
 *.flac
+
+
+
+./storage/uploads/
+/storage/uploads/*
