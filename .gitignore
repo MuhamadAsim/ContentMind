@@ -135,3 +135,7 @@ desktop.ini
 
 ./storage/uploads/
 /storage/uploads/*
+
+# Piper voice models
+app/resources/voices/*.onnx
+app/resources/voices/*.onnx.json
